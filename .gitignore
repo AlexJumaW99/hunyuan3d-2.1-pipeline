@@ -1,0 +1,51 @@
+# Generated outputs & save directories
+save_dir/
+output_3mf/
+test_images/
+gradio_cache/
+
+# Model checkpoints & weights
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+hy3dpaint/ckpt/
+
+# Generated 3D files (intermediates)
+*.glb
+*.stl
+*.3mf
+*.obj
+*.mtl
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# Compiled CUDA / C++ extensions
+*.o
+*.a
+custom_rasterizer/build/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+wandb/
+runs/
