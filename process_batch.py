@@ -33,14 +33,76 @@ import trimesh
 from PIL import Image
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — 90s HACKER ROBOTIC EDITION
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s — %(message)s",
+    format="%(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("process_batch")
+
+# Suppress verbose third-party logging
+logging.getLogger("trimesh").setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
+
+def _ts():
+    """Timestamp in hacker format."""
+    return time.strftime("%H:%M:%S")
+
+def _banner():
+    """Print the boot banner."""
+    print("\n")
+    print("  ╔══════════════════════════════════════════════════════════════════╗")
+    print("  ║                                                                  ║")
+    print("  ║   ██╗  ██╗██╗   ██╗███╗   ██╗██╗   ██╗ █████╗ ███╗   ██╗       ║")
+    print("  ║   ██║  ██║██║   ██║████╗  ██║╚██╗ ██╔╝██╔══██╗████╗  ██║       ║")
+    print("  ║   ███████║██║   ██║██╔██╗ ██║ ╚████╔╝ ███████║██╔██╗ ██║       ║")
+    print("  ║   ██╔══██║██║   ██║██║╚██╗██║  ╚██╔╝  ██╔══██║██║╚██╗██║       ║")
+    print("  ║   ██║  ██║╚██████╔╝██║ ╚████║   ██║   ██║  ██║██║ ╚████║       ║")
+    print("  ║   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝       ║")
+    print("  ║                    3 D   P R I N T   E N G I N E                 ║")
+    print("  ║                         v1.0 // 2026                             ║")
+    print("  ║                                                                  ║")
+    print("  ╚══════════════════════════════════════════════════════════════════╝")
+    print("")
+    print(f"  🤖 [SYSTEM] Boot sequence initiated @ {_ts()}")
+    print(f"  🖥️  [SYSTEM] GPU: NVIDIA RTX 5070 Ti // 16GB VRAM")
+    print(f"  ⚡ [SYSTEM] CUDA: {torch.version.cuda} // PyTorch: {torch.__version__}")
+    print("")
+
+def hlog(emoji, tag, msg, indent=0):
+    """Themed log output."""
+    pad = "    " * indent
+    print(f"  {pad}{emoji} [{_ts()}] [{tag}] {msg}")
+
+def hlog_stage(stage_num, stage_name):
+    """Print a major stage header."""
+    print("")
+    print(f"  ┌─────────────────────────────────────────────────────────┐")
+    print(f"  │  ⚙️  STAGE {stage_num} » {stage_name:<47}│")
+    print(f"  └─────────────────────────────────────────────────────────┘")
+    print("")
+
+def hlog_substep(emoji, msg):
+    """Print an indented substep."""
+    print(f"      {emoji} {msg}")
+
+def hlog_result(emoji, msg):
+    """Print a result line."""
+    print(f"      {emoji} {msg}")
+
+def hlog_separator():
+    """Print a thin separator."""
+    print(f"  {'·' * 60}")
+
+def hlog_image_header(idx, total, name):
+    """Print image processing header."""
+    print("\n")
+    print(f"  ╔{'═' * 60}╗")
+    print(f"  ║  🎯 TARGET [{idx}/{total}]: {name:<42}║")
+    print(f"  ╚{'═' * 60}╝")
+    print("")
 
 # ---------------------------------------------------------------------------
 # Supported input image extensions
@@ -56,15 +118,17 @@ def init_pipeline(args):
     Load shape model, texture pipeline, background remover, and post-processors.
     Mirrors the model-loading block from gradio_app.py with identical mmgp offloading.
     """
-    log.info("Initializing pipeline...")
+    _banner()
+    hlog("🔧", "INIT", "Booting neural subsystems...")
 
     # ---- Background removal ------------------------------------------------
-    log.info("Loading background removal model...")
+    hlog("📡", "INIT", "Loading background removal unit...")
     from hy3dshape.rembg import BackgroundRemover
     rmbg_worker = BackgroundRemover()
+    hlog_result("✅", "Background remover ─── ONLINE")
 
     # ---- Shape model -------------------------------------------------------
-    log.info("Loading shape model (Hunyuan3DDiTFlowMatchingPipeline)...")
+    hlog("📡", "INIT", "Loading shape generation core (DiT FlowMatching)...")
     from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
 
     i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
@@ -73,17 +137,19 @@ def init_pipeline(args):
         use_safetensors=False,
         device=args.device,
     )
+    hlog_result("✅", "Shape core ─── ONLINE")
 
     # ---- Post-processors (existing) ----------------------------------------
-    log.info("Loading mesh post-processors...")
+    hlog("📡", "INIT", "Loading mesh post-processor array...")
     from hy3dshape.postprocessors import FloaterRemover, DegenerateFaceRemover, FaceReducer
 
     floater_remove_worker = FloaterRemover()
     degenerate_face_remove_worker = DegenerateFaceRemover()
     face_reduce_worker = FaceReducer()
+    hlog_result("✅", "Post-processors ─── ONLINE")
 
     # ---- Texture pipeline --------------------------------------------------
-    log.info("Loading texture pipeline (Hunyuan3DPaintPipeline)...")
+    hlog("📡", "INIT", "Loading PBR texture synthesis engine...")
     from hy3dpaint.textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
 
     conf = Hunyuan3DPaintConfig(max_num_view=8, resolution=512)
@@ -97,12 +163,17 @@ def init_pipeline(args):
 
     # ---- mmgp offloading on the multiview diffusion sub-pipeline -----------
     if args.low_vram_mode:
-        log.info("Applying mmgp HighRAM_LowVRAM offloading to multiview model...")
+        hlog("🧠", "MMGP", "Engaging HighRAM_LowVRAM memory offload protocol...")
         from mmgp import offload, profile_type
         core_pipe = tex_pipeline.models["multiview_model"].pipeline
         offload.profile(core_pipe, profile_type.HighRAM_LowVRAM)
+        hlog_result("✅", "MMGP offload ─── ENGAGED")
 
-    log.info("Pipeline initialization complete.")
+    print("")
+    print("  ┌─────────────────────────────────────────────────────────┐")
+    print("  │  🤖 ALL SYSTEMS NOMINAL ── PIPELINE READY FOR INPUT     │")
+    print("  └─────────────────────────────────────────────────────────┘")
+    print("")
     return {
         "i23d_worker": i23d_worker,
         "tex_pipeline": tex_pipeline,
@@ -157,7 +228,7 @@ def offload_all_to_cpu(i23d_worker, tex_pipeline):
     move_texture_to_cpu(tex_pipeline)
     torch.cuda.empty_cache()
     gc.collect()
-    log.info("All models offloaded to CPU. VRAM free for post-processing.")
+    hlog("💾", "VRAM", "All neural cores offloaded to CPU ── VRAM clear for post-ops")
 
 
 # ===========================================================================
@@ -184,14 +255,16 @@ def generate_3d(image_path, models, save_dir, args):
     os.makedirs(save_dir, exist_ok=True)
 
     # ---- Load and preprocess image ----------------------------------------
-    log.info(f"Loading image: {image_path}")
+    hlog("📂", "INPUT", f"Ingesting target image: {image_path}")
     image = Image.open(image_path).convert("RGBA")
 
-    log.info("Removing background...")
+    hlog("✂️ ", "REMBG", "Stripping background noise...")
     image = remove_background(image, rmbg_worker)
+    hlog_result("✅", "Background ─── ELIMINATED")
 
     # ---- Shape generation --------------------------------------------------
-    log.info("Running shape generation...")
+    hlog_stage(1, "SHAPE GENERATION")
+    hlog("🔮", "SHAPE", "Initiating 3D diffusion sampling...")
     mesh_output = i23d_worker(
         image=image,
         num_inference_steps=args.num_steps,
@@ -206,26 +279,27 @@ def generate_3d(image_path, models, save_dir, args):
         mesh = mesh_output
 
     # ---- Built-in post-processors -----------------------------------------
-    log.info("Running floater removal + degenerate face removal...")
+    hlog("🧹", "CLEAN", "Purging floating artifacts + degenerate faces...")
     mesh = floater_remove_worker(mesh)
     mesh = degenerate_face_remove_worker(mesh)
 
     if args.gen_face_reduce > 0:
-        log.info(f"Reducing faces to {args.gen_face_reduce} (generation stage)...")
+        hlog("📐", "REDUCE", f"Compressing mesh topology → {args.gen_face_reduce} faces...")
         mesh = face_reduce_worker(mesh, args.gen_face_reduce)
 
     # Save raw shape OBJ for texture pipeline input
     raw_obj_path = os.path.join(save_dir, "raw_shape.obj")
     mesh.export(raw_obj_path)
-    log.info(f"Raw shape saved: {raw_obj_path}")
+    hlog_result("💾", f"Raw shape archived → {raw_obj_path}")
 
     # ---- VRAM swap: shape → CPU, texture → GPU ----------------------------
-    log.info("Swapping VRAM: shape → CPU, texture → GPU...")
+    hlog("🔄", "VRAM", "Swapping neural cores: SHAPE→CPU // TEXTURE→GPU...")
     offload_shape_to_cpu(i23d_worker)
     move_texture_to_gpu(tex_pipeline)
 
     # ---- Texture generation ------------------------------------------------
-    log.info("Running PBR texture generation...")
+    hlog_stage(2, "PBR TEXTURE SYNTHESIS")
+    hlog("🎨", "PAINT", "Generating albedo + metallic + roughness maps...")
     textured_dir = os.path.join(save_dir, "textured")
     os.makedirs(textured_dir, exist_ok=True)
     textured_mesh_path = os.path.join(textured_dir, "textured_mesh.obj")
@@ -241,11 +315,11 @@ def generate_3d(image_path, models, save_dir, args):
     )
 
     # ---- VRAM swap: texture → CPU, shape → GPU ----------------------------
-    log.info("Swapping VRAM: texture → CPU, shape → GPU...")
+    hlog("🔄", "VRAM", "Swapping neural cores: TEXTURE→CPU // SHAPE→GPU...")
     move_texture_to_cpu(tex_pipeline)
     restore_shape_to_gpu(i23d_worker)
 
-    log.info(f"Textured mesh saved to: {textured_dir}")
+    hlog_result("✅", f"Textured mesh archived → {textured_dir}")
     return textured_dir
 
 
@@ -262,19 +336,21 @@ def repair_mesh(obj_path, output_path=None):
 
     Returns: repaired trimesh.Trimesh object (also saved to output_path if given).
     """
-    log.info(f"Repairing mesh: {obj_path}")
+    hlog_stage(3, "MESH REPAIR PROTOCOL")
+    hlog("🔧", "REPAIR", f"Target mesh: {obj_path}")
     import pymeshlab
 
     # ---- Load OBJ directly in PyMeshLab (preserves UVs + texture refs) ----
     ms = pymeshlab.MeshSet()
     ms.load_new_mesh(obj_path)
-    log.info(f"  Loaded: {ms.current_mesh().vertex_number()} verts, {ms.current_mesh().face_number()} faces")
+    hlog_substep("📊", f"Mesh loaded: {ms.current_mesh().vertex_number()} verts // {ms.current_mesh().face_number()} faces")
 
     # ---- Step 1: PyMeshLab repairs ----------------------------------------
-    log.info("  PyMeshLab: removing duplicates, repairing non-manifold...")
+    hlog_substep("🔩", "Purging duplicate geometry...")
     ms.meshing_remove_duplicate_faces()
     ms.meshing_remove_duplicate_vertices()
 
+    hlog_substep("🔩", "Running non-manifold repair [5 iterations]...")
     # Run non-manifold repair iteratively (some edges need multiple passes)
     for i in range(5):
         ms.meshing_repair_non_manifold_edges()
@@ -283,24 +359,24 @@ def repair_mesh(obj_path, output_path=None):
     # Attempt hole closing
     try:
         ms.meshing_close_holes(maxholesize=30)
-        log.info("  Holes closed successfully.")
+        hlog_substep("✅", "Hull breach sealed ─── holes closed [maxsize=30]")
     except Exception as e:
-        log.warning(f"  Could not close holes ({e}). Trying smaller size...")
+        hlog_substep("⚠️ ", f"Primary seal failed ({e})")
         try:
             ms.meshing_close_holes(maxholesize=10)
-            log.info("  Holes closed with maxholesize=10.")
+            hlog_substep("✅", "Secondary seal applied ─── holes closed [maxsize=10]")
         except Exception:
-            log.warning("  Hole closing skipped entirely.")
+            hlog_substep("⚠️ ", "Hull seal skipped ─── will attempt downstream")
 
     # ---- Step 2: Back-side selective Laplacian smoothing -------------------
-    log.info("  Back-side smoothing: targeting faces with normal Z < -0.3...")
+    hlog_substep("🔬", "Scanning for back-face anomalies [normal_Z < -0.3]...")
     current_mesh = ms.current_mesh()
     face_normals = current_mesh.face_normal_matrix()
 
     if face_normals is not None and len(face_normals) > 0:
         back_mask = face_normals[:, 2] < -0.3
         num_back = int(np.sum(back_mask))
-        log.info(f"  Found {num_back}/{len(face_normals)} back-facing faces")
+        hlog_substep("🎯", f"Detected {num_back}/{len(face_normals)} back-facing anomalies")
 
         if num_back > 0:
             ms.set_selection_none()
@@ -311,13 +387,14 @@ def repair_mesh(obj_path, output_path=None):
                 stepsmoothnum=3,
                 selected=True,
             )
+            hlog_substep("✅", "Laplacian smoothing applied [3 passes]")
 
     # ---- Save repaired OBJ via PyMeshLab (preserves UVs) ------------------
     if output_path is None:
         output_path = obj_path.replace(".obj", "_repaired.obj")
 
     ms.save_current_mesh(output_path)
-    log.info(f"  Repaired mesh saved (with UVs): {output_path}")
+    hlog_substep("💾", f"Repaired mesh + UVs archived → {os.path.basename(output_path)}")
 
     # ---- Reload in trimesh (picks up UVs from the saved OBJ) --------------
     repaired = trimesh.load(output_path, process=False)
@@ -328,9 +405,10 @@ def repair_mesh(obj_path, output_path=None):
     trimesh.repair.fix_normals(repaired)
     trimesh.repair.fix_inversion(repaired)
 
-    log.info(f"  Final repaired mesh: {len(repaired.vertices)} verts, {len(repaired.faces)} faces")
+    hlog_substep("📊", f"Final mesh: {len(repaired.vertices)} verts // {len(repaired.faces)} faces")
 
     # ---- Step 3: Manifold3D watertight check (optional, geometry only) ----
+    hlog_substep("🔬", "Running Manifold3D watertight validation...")
     # Manifold3D strips UVs, so we only use it to VALIDATE, not to replace
     try:
         import manifold3d
@@ -342,11 +420,13 @@ def repair_mesh(obj_path, output_path=None):
         )
         result = test_mesh.to_mesh()
         if len(result.tri_verts) > 0:
-            log.info("  Manifold3D: mesh validated as watertight.")
+            hlog_substep("✅", "Manifold3D ─── WATERTIGHT CONFIRMED")
         else:
-            log.warning("  Manifold3D: validation returned empty mesh — using PyMeshLab output.")
+            hlog_substep("⚠️ ", "Manifold3D returned empty ─── using PyMeshLab output")
     except Exception as e:
-        log.warning(f"  Manifold3D validation skipped ({e}) — using PyMeshLab output.")
+        hlog_substep("⚠️ ", f"Manifold3D skipped ({e}) ─── using PyMeshLab output")
+
+    print("")
 
     return repaired
 
@@ -366,16 +446,18 @@ def enhance_texture(texture_dir, esrgan_ckpt="hy3dpaint/ckpt/RealESRGAN_x4plus.p
         # Try .png
         albedo_path = os.path.join(texture_dir, "textured_mesh.png")
     if not os.path.exists(albedo_path):
-        log.warning(f"No albedo texture found in {texture_dir}, skipping enhancement.")
+        hlog_substep("⚠️ ", f"No albedo texture found in {texture_dir} ─── skipping")
         return None
 
-    log.info(f"Enhancing albedo texture: {albedo_path}")
+    hlog_stage(4, "TEXTURE UPSCALE [REAL-ESRGAN 4×]")
+    hlog("🖼️ ", "ESRGAN", f"Target atlas: {albedo_path}")
 
     import cv2
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from realesrgan import RealESRGANer
 
     # Build the ESRGAN model (small: ~60MB on GPU)
+    hlog_substep("📡", "Loading Real-ESRGAN neural upscaler [~60MB VRAM]...")
     rrdb_model = RRDBNet(
         num_in_ch=3, num_out_ch=3,
         num_feat=64, num_block=23, num_grow_ch=32,
@@ -393,16 +475,17 @@ def enhance_texture(texture_dir, esrgan_ckpt="hy3dpaint/ckpt/RealESRGAN_x4plus.p
 
     # Load albedo
     img = cv2.imread(albedo_path, cv2.IMREAD_UNCHANGED)
-    log.info(f"  Input albedo size: {img.shape[1]}×{img.shape[0]}")
+    hlog_substep("📊", f"Input resolution: {img.shape[1]}×{img.shape[0]}")
 
     # Upscale 4×
+    hlog_substep("⚡", "Neural upscale in progress...")
     output, _ = upsampler.enhance(img, outscale=4)
-    log.info(f"  Output albedo size: {output.shape[1]}×{output.shape[0]}")
+    hlog_substep("📊", f"Output resolution: {output.shape[1]}×{output.shape[0]}")
 
     # Save enhanced albedo (overwrite original)
     enhanced_path = os.path.join(texture_dir, "textured_mesh_enhanced.jpg")
     cv2.imwrite(enhanced_path, output, [cv2.IMWRITE_JPEG_QUALITY, 98])
-    log.info(f"  Enhanced albedo saved: {enhanced_path}")
+    hlog_substep("💾", f"Enhanced atlas archived → {os.path.basename(enhanced_path)}")
 
     # Also overwrite the original so downstream export picks it up
     cv2.imwrite(albedo_path, output, [cv2.IMWRITE_JPEG_QUALITY, 98])
@@ -411,6 +494,8 @@ def enhance_texture(texture_dir, esrgan_ckpt="hy3dpaint/ckpt/RealESRGAN_x4plus.p
     del upsampler, rrdb_model
     torch.cuda.empty_cache()
     gc.collect()
+    hlog_substep("🗑️ ", "ESRGAN purged from VRAM")
+    print("")
 
     return enhanced_path
 
@@ -434,7 +519,7 @@ def decimate_mesh(obj_path, target_faces=80000, output_path=None):
 
     current_faces = len(mesh.faces)
     if current_faces <= target_faces:
-        log.info(f"Mesh already has {current_faces} faces (≤ {target_faces}), skipping decimation.")
+        hlog("📐", "DECIMATE", f"Mesh has {current_faces} faces (≤ {target_faces}) ─── skip")
         if output_path:
             import shutil
             shutil.copy2(obj_path, output_path)
@@ -447,7 +532,8 @@ def decimate_mesh(obj_path, target_faces=80000, output_path=None):
                     shutil.copy2(src, os.path.join(out_dir, os.path.basename(src)))
         return mesh
 
-    log.info(f"Decimating mesh: {current_faces} → {target_faces} faces...")
+    hlog_stage(5, "MESH DECIMATION")
+    hlog("📐", "DECIMATE", f"Compressing: {current_faces} → {target_faces} faces...")
     ms = pymeshlab.MeshSet()
     ms.load_new_mesh(obj_path)
 
@@ -462,14 +548,15 @@ def decimate_mesh(obj_path, target_faces=80000, output_path=None):
         output_path = obj_path.replace(".obj", "_decimated.obj")
 
     ms.save_current_mesh(output_path)
-    log.info(f"  Decimated and saved (with UVs): {output_path}")
+    hlog_substep("💾", f"Decimated mesh + UVs archived → {os.path.basename(output_path)}")
 
     # Reload in trimesh to pick up UVs
     decimated = trimesh.load(output_path, process=False)
     if isinstance(decimated, trimesh.Scene):
         decimated = decimated.dump(concatenate=True)
 
-    log.info(f"  Decimated: {len(decimated.faces)} faces")
+    hlog_substep("📊", f"Final polygon count: {len(decimated.faces)} faces")
+    print("")
     return decimated
 
 
@@ -483,7 +570,7 @@ def bake_vertex_colors(mesh, albedo_path):
     vertex colors. Handles both per-vertex and per-face-vertex UV layouts.
     """
     if not os.path.exists(albedo_path):
-        log.warning(f"Albedo not found at {albedo_path}, exporting without color.")
+        hlog_substep("⚠️ ", f"Albedo not found at {albedo_path} ─── exporting colorless")
         return mesh
 
     texture = Image.open(albedo_path).convert("RGB")
@@ -503,7 +590,7 @@ def bake_vertex_colors(mesh, albedo_path):
                 uv = raw_uv
             else:
                 # Per-face-vertex UVs: average to per-vertex
-                log.info(f"  Converting {len(raw_uv)} face-vertex UVs to {len(mesh.vertices)} vertex UVs...")
+                hlog_substep("🔄", f"Remapping {len(raw_uv)} face-vertex UVs → {len(mesh.vertices)} vertex UVs...")
                 uv = np.zeros((len(mesh.vertices), 2), dtype=np.float64)
                 counts = np.zeros(len(mesh.vertices), dtype=np.int32)
                 for fi, face in enumerate(mesh.faces):
@@ -528,9 +615,9 @@ def bake_vertex_colors(mesh, albedo_path):
             mesh=mesh,
             vertex_colors=vertex_colors,
         )
-        log.info(f"  Baked vertex colors from albedo ({w}×{h}) onto {len(mesh.vertices)} vertices.")
+        hlog_substep("🎨", f"Vertex colors baked from {w}×{h} atlas → {len(mesh.vertices)} vertices")
     else:
-        log.warning("  No UV coordinates found on mesh, exporting without color.")
+        hlog_substep("⚠️ ", "No UV coordinates found ─── exporting colorless")
 
     return mesh
 
@@ -539,14 +626,19 @@ def export_3mf(mesh, albedo_path, output_path):
     """
     Export mesh to .3mf format with baked vertex colors from albedo texture.
     """
-    log.info(f"Exporting .3mf: {output_path}")
+    hlog_stage(6, "3MF EXPORT [PRINT-READY]")
+    hlog("📦", "EXPORT", f"Destination: {output_path}")
 
     # Bake texture into vertex colors for reliable 3D print color
+    hlog_substep("🎨", "Baking vertex colors from albedo texture...")
     mesh = bake_vertex_colors(mesh, albedo_path)
 
     # trimesh exports .3mf natively
+    hlog_substep("📦", "Writing .3mf container...")
     mesh.export(output_path, file_type="3mf")
-    log.info(f"  .3mf exported: {output_path} ({os.path.getsize(output_path) / 1e6:.1f} MB)")
+    size_mb = os.path.getsize(output_path) / 1e6
+    hlog_substep("✅", f"Export complete ─── {size_mb:.1f} MB")
+    print("")
     return output_path
 
 
@@ -562,10 +654,6 @@ def process_single(image_path, models, output_dir, args):
     stem = Path(image_path).stem
     work_dir = os.path.join(output_dir, stem)
     os.makedirs(work_dir, exist_ok=True)
-
-    log.info(f"{'='*60}")
-    log.info(f"Processing: {stem}")
-    log.info(f"{'='*60}")
 
     # ---- Stage 1: Generation ----------------------------------------------
     textured_dir = generate_3d(image_path, models, work_dir, args)
@@ -623,10 +711,10 @@ def process_batch(args):
     ])
 
     if not image_files:
-        log.error(f"No images found in {input_dir} (supported: {IMAGE_EXTS})")
+        hlog("❌", "ERROR", f"No images found in {input_dir} (supported: {IMAGE_EXTS})")
         sys.exit(1)
 
-    log.info(f"Found {len(image_files)} images in {input_dir}")
+    hlog("📂", "SCAN", f"Detected {len(image_files)} target(s) in {input_dir}")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -637,20 +725,26 @@ def process_batch(args):
     results = {"success": [], "failed": []}
 
     for idx, img_path in enumerate(image_files, 1):
-        log.info(f"\n{'#'*60}")
-        log.info(f"# IMAGE {idx}/{len(image_files)}: {img_path.name}")
-        log.info(f"{'#'*60}")
+        hlog_image_header(idx, len(image_files), img_path.name)
         t0 = time.time()
 
         try:
             output_path = process_single(str(img_path), models, str(output_dir), args)
             elapsed = time.time() - t0
-            log.info(f"SUCCESS: {img_path.name} → {output_path} ({elapsed:.0f}s)")
+
+            print("")
+            print(f"  ┌─────────────────────────────────────────────────────────┐")
+            print(f"  │  ✅ MISSION COMPLETE                                     │")
+            print(f"  │  📁 {os.path.basename(output_path):<53}│")
+            print(f"  │  ⏱️  {elapsed:.0f}s elapsed                                       │")
+            print(f"  └─────────────────────────────────────────────────────────┘")
+
             results["success"].append(img_path.name)
         except Exception as e:
             elapsed = time.time() - t0
-            log.error(f"FAILED: {img_path.name} after {elapsed:.0f}s — {e}")
-            log.error(traceback.format_exc())
+            hlog("❌", "FAIL", f"{img_path.name} ── aborted after {elapsed:.0f}s")
+            hlog("💀", "FAIL", f"Cause: {e}")
+            log.debug(traceback.format_exc())
             results["failed"].append((img_path.name, str(e)))
 
             # Try to restore GPU state for next image
@@ -660,16 +754,31 @@ def process_batch(args):
                 pass
 
     # ---- Summary -----------------------------------------------------------
-    log.info(f"\n{'='*60}")
-    log.info(f"BATCH COMPLETE")
-    log.info(f"  Succeeded: {len(results['success'])}/{len(image_files)}")
+    total = len(image_files)
+    ok = len(results["success"])
+    fail = len(results["failed"])
+
+    print("\n")
+    print("  ╔══════════════════════════════════════════════════════════════╗")
+    print("  ║                    BATCH OPERATION SUMMARY                   ║")
+    print("  ╠══════════════════════════════════════════════════════════════╣")
+    print(f"  ║  📊 Processed: {total:<3} targets                                 ║")
+    print(f"  ║  ✅ Success:   {ok:<3}                                            ║")
+    print(f"  ║  ❌ Failed:    {fail:<3}                                            ║")
+    print("  ╠══════════════════════════════════════════════════════════════╣")
     for name in results["success"]:
-        log.info(f"    ✓ {name}")
-    if results["failed"]:
-        log.info(f"  Failed: {len(results['failed'])}/{len(image_files)}")
-        for name, err in results["failed"]:
-            log.info(f"    ✗ {name}: {err}")
-    log.info(f"{'='*60}")
+        display = name[:50]
+        print(f"  ║  ✅ {display:<57}║")
+    for name, err in results["failed"]:
+        display = f"{name}: {err}"[:50]
+        print(f"  ║  ❌ {display:<57}║")
+    print("  ╠══════════════════════════════════════════════════════════════╣")
+    if fail == 0:
+        print("  ║  🤖 ALL TARGETS PROCESSED ── SYSTEM NOMINAL                ║")
+    else:
+        print("  ║  ⚠️  PARTIAL COMPLETION ── CHECK LOGS                       ║")
+    print("  ╚══════════════════════════════════════════════════════════════╝")
+    print("")
 
 
 # ===========================================================================
