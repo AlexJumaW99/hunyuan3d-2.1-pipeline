@@ -18,6 +18,11 @@ import glob
 import logging
 import os
 import sys
+
+# Match gradio_app.py lines 18-19: add subproject dirs to Python path
+sys.path.insert(0, './hy3dshape')
+sys.path.insert(0, './hy3dpaint')
+
 import time
 import traceback
 from pathlib import Path
@@ -671,11 +676,13 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output folder for .3mf files and intermediates")
 
-    # Model paths (defaults match standard Hunyuan3D 2.1 layout)
-    parser.add_argument("--model_path", type=str, default=".",
-                        help="Path to Hunyuan3D model (default: current dir)")
+    # Model paths (defaults match gradio_app.py)
+    parser.add_argument("--model_path", type=str, default="tencent/Hunyuan3D-2.1",
+                        help="HuggingFace repo or local path for shape model")
     parser.add_argument("--subfolder", type=str, default="hunyuan3d-dit-v2-1",
                         help="Subfolder for shape model weights")
+    parser.add_argument("--texgen_model_path", type=str, default="tencent/Hunyuan3D-2.1",
+                        help="HuggingFace repo or local path for texture model")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device for shape model (default: cuda)")
     parser.add_argument("--low_vram_mode", action="store_true",
