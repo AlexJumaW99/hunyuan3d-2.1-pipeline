@@ -256,42 +256,22 @@ def generate_3d(image_path, models, save_dir, args):
 def repair_mesh(obj_path, output_path=None):
     """
     Full mesh repair chain:
-      1. trimesh basic repairs (normals, inversion, holes)
-      2. PyMeshLab heavy-duty repairs (non-manifold, duplicates, holes)
-      3. Back-side selective Laplacian smoothing (normal Z < -0.3)
-      4. Manifold3D watertight guarantee
+      1. PyMeshLab: load OBJ directly (preserves UVs), repair non-manifold, close holes
+      2. Back-side selective Laplacian smoothing (normal Z < -0.3)
+      3. Manifold3D watertight check (geometry only, with validation)
 
     Returns: repaired trimesh.Trimesh object (also saved to output_path if given).
     """
     log.info(f"Repairing mesh: {obj_path}")
-
-    # ---- Load with trimesh ------------------------------------------------
-    mesh = trimesh.load(obj_path, process=False)
-    if isinstance(mesh, trimesh.Scene):
-        # Merge all geometries into a single mesh
-        mesh = mesh.dump(concatenate=True)
-
-    # Preserve UV + texture info for later re-association
-    has_visuals = hasattr(mesh, "visual") and mesh.visual is not None
-
-    # ---- Step 1: trimesh basic repairs ------------------------------------
-    log.info("  trimesh: fixing normals, inversion, filling holes...")
-    trimesh.repair.fix_normals(mesh)
-    trimesh.repair.fix_inversion(mesh)
-    trimesh.repair.fill_holes(mesh)
-
-    # ---- Step 2: PyMeshLab heavy-duty repairs -----------------------------
-    log.info("  PyMeshLab: non-manifold repair, duplicate removal, hole closing...")
     import pymeshlab
+
+    # ---- Load OBJ directly in PyMeshLab (preserves UVs + texture refs) ----
     ms = pymeshlab.MeshSet()
+    ms.load_new_mesh(obj_path)
+    log.info(f"  Loaded: {ms.current_mesh().vertex_number()} verts, {ms.current_mesh().face_number()} faces")
 
-    # Convert trimesh → pymeshlab
-    pm_mesh = pymeshlab.Mesh(
-        vertex_matrix=mesh.vertices.astype(np.float64),
-        face_matrix=mesh.faces.astype(np.int32),
-    )
-    ms.add_mesh(pm_mesh)
-
+    # ---- Step 1: PyMeshLab repairs ----------------------------------------
+    log.info("  PyMeshLab: removing duplicates, repairing non-manifold...")
     ms.meshing_remove_duplicate_faces()
     ms.meshing_remove_duplicate_vertices()
 
@@ -300,83 +280,73 @@ def repair_mesh(obj_path, output_path=None):
         ms.meshing_repair_non_manifold_edges()
         ms.meshing_repair_non_manifold_vertices()
 
-    # Attempt hole closing — requires manifold edges, so wrap in try/except
+    # Attempt hole closing
     try:
         ms.meshing_close_holes(maxholesize=30)
         log.info("  Holes closed successfully.")
     except Exception as e:
-        log.warning(f"  Could not close holes ({e}). Continuing without.")
-        # Try with smaller hole size as fallback
+        log.warning(f"  Could not close holes ({e}). Trying smaller size...")
         try:
             ms.meshing_close_holes(maxholesize=10)
-            log.info("  Holes closed with smaller maxholesize=10.")
+            log.info("  Holes closed with maxholesize=10.")
         except Exception:
-            log.warning("  Hole closing skipped entirely — Manifold3D will handle it.")
+            log.warning("  Hole closing skipped entirely.")
 
-    # ---- Step 3: Back-side selective Laplacian smoothing -------------------
+    # ---- Step 2: Back-side selective Laplacian smoothing -------------------
     log.info("  Back-side smoothing: targeting faces with normal Z < -0.3...")
     current_mesh = ms.current_mesh()
     face_normals = current_mesh.face_normal_matrix()
 
     if face_normals is not None and len(face_normals) > 0:
-        # Select back-facing faces (normal Z < -0.3 in canonical view)
         back_mask = face_normals[:, 2] < -0.3
         num_back = int(np.sum(back_mask))
         log.info(f"  Found {num_back}/{len(face_normals)} back-facing faces")
 
         if num_back > 0:
-            # Select back-facing vertices via face selection
-            ms.set_selection_none()
-
-            # Get vertex indices belonging to back-facing faces
-            face_matrix = current_mesh.face_matrix()
-            back_face_indices = np.where(back_mask)[0]
-            back_vertex_indices = np.unique(face_matrix[back_face_indices].flatten())
-
-            # Create vertex selection mask
-            n_verts = current_mesh.vertex_number()
-            vert_sel = np.zeros(n_verts, dtype=bool)
-            vert_sel[back_vertex_indices] = True
-
-            # Apply selection and smooth only selected vertices
             ms.set_selection_none()
             ms.compute_selection_by_condition_per_vertex(
-                condselect=f"(nx*0 + ny*0 + nz) < -0.3"
+                condselect="(nx*0 + ny*0 + nz) < -0.3"
             )
             ms.apply_coord_laplacian_smoothing(
                 stepsmoothnum=3,
                 selected=True,
             )
 
-    # Extract repaired mesh from pymeshlab
-    repaired_pm = ms.current_mesh()
-    vertices = repaired_pm.vertex_matrix()
-    faces = repaired_pm.face_matrix()
+    # ---- Save repaired OBJ via PyMeshLab (preserves UVs) ------------------
+    if output_path is None:
+        output_path = obj_path.replace(".obj", "_repaired.obj")
 
-    # ---- Step 4: Manifold3D watertight guarantee --------------------------
-    log.info("  Manifold3D: ensuring watertight manifold...")
+    ms.save_current_mesh(output_path)
+    log.info(f"  Repaired mesh saved (with UVs): {output_path}")
+
+    # ---- Reload in trimesh (picks up UVs from the saved OBJ) --------------
+    repaired = trimesh.load(output_path, process=False)
+    if isinstance(repaired, trimesh.Scene):
+        repaired = repaired.dump(concatenate=True)
+
+    # Fix normals in trimesh
+    trimesh.repair.fix_normals(repaired)
+    trimesh.repair.fix_inversion(repaired)
+
+    log.info(f"  Final repaired mesh: {len(repaired.vertices)} verts, {len(repaired.faces)} faces")
+
+    # ---- Step 3: Manifold3D watertight check (optional, geometry only) ----
+    # Manifold3D strips UVs, so we only use it to VALIDATE, not to replace
     try:
         import manifold3d
-
-        manifold_mesh = manifold3d.Manifold(
+        test_mesh = manifold3d.Manifold(
             mesh=manifold3d.Mesh(
-                vert_properties=np.array(vertices, dtype=np.float64),
-                tri_verts=np.array(faces, dtype=np.uint32),
+                vert_properties=np.array(repaired.vertices, dtype=np.float64),
+                tri_verts=np.array(repaired.faces, dtype=np.uint32),
             )
         )
-        result = manifold_mesh.to_mesh()
-        vertices = np.array(result.vert_properties[:, :3])
-        faces = np.array(result.tri_verts)
-        log.info("  Manifold3D: watertight mesh obtained.")
+        result = test_mesh.to_mesh()
+        if len(result.tri_verts) > 0:
+            log.info("  Manifold3D: mesh validated as watertight.")
+        else:
+            log.warning("  Manifold3D: validation returned empty mesh — using PyMeshLab output.")
     except Exception as e:
-        log.warning(f"  Manifold3D failed ({e}), continuing with PyMeshLab output.")
-
-    # Build final trimesh
-    repaired = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
-
-    if output_path:
-        repaired.export(output_path)
-        log.info(f"  Repaired mesh saved: {output_path}")
+        log.warning(f"  Manifold3D validation skipped ({e}) — using PyMeshLab output.")
 
     return repaired
 
@@ -449,25 +419,37 @@ def enhance_texture(texture_dir, esrgan_ckpt="hy3dpaint/ckpt/RealESRGAN_x4plus.p
 # 4. DECIMATION (PyMeshLab quadric edge collapse)
 # ===========================================================================
 
-def decimate_mesh(mesh, target_faces=80000, output_path=None):
+def decimate_mesh(obj_path, target_faces=80000, output_path=None):
     """
     Decimate mesh to target face count using PyMeshLab quadric edge collapse.
-    Returns: decimated trimesh.Trimesh.
+    Loads OBJ directly through PyMeshLab to preserve UVs.
+    Returns: decimated trimesh.Trimesh (with UVs), also saves to output_path.
     """
+    import pymeshlab
+
+    # Load to check face count
+    mesh = trimesh.load(obj_path, process=False)
+    if isinstance(mesh, trimesh.Scene):
+        mesh = mesh.dump(concatenate=True)
+
     current_faces = len(mesh.faces)
     if current_faces <= target_faces:
         log.info(f"Mesh already has {current_faces} faces (≤ {target_faces}), skipping decimation.")
+        if output_path:
+            import shutil
+            shutil.copy2(obj_path, output_path)
+            # Also copy MTL and texture files
+            obj_dir = os.path.dirname(obj_path)
+            out_dir = os.path.dirname(output_path)
+            for ext in [".mtl", ".jpg", ".png"]:
+                src = obj_path.replace(".obj", ext)
+                if os.path.exists(src) and obj_dir != out_dir:
+                    shutil.copy2(src, os.path.join(out_dir, os.path.basename(src)))
         return mesh
 
     log.info(f"Decimating mesh: {current_faces} → {target_faces} faces...")
-    import pymeshlab
     ms = pymeshlab.MeshSet()
-
-    pm_mesh = pymeshlab.Mesh(
-        vertex_matrix=mesh.vertices.astype(np.float64),
-        face_matrix=mesh.faces.astype(np.int32),
-    )
-    ms.add_mesh(pm_mesh)
+    ms.load_new_mesh(obj_path)
 
     ms.meshing_decimation_quadric_edge_collapse(
         targetfacenum=target_faces,
@@ -476,18 +458,18 @@ def decimate_mesh(mesh, target_faces=80000, output_path=None):
         qualitythr=0.5,
     )
 
-    result = ms.current_mesh()
-    decimated = trimesh.Trimesh(
-        vertices=result.vertex_matrix(),
-        faces=result.face_matrix(),
-        process=True,
-    )
+    if output_path is None:
+        output_path = obj_path.replace(".obj", "_decimated.obj")
+
+    ms.save_current_mesh(output_path)
+    log.info(f"  Decimated and saved (with UVs): {output_path}")
+
+    # Reload in trimesh to pick up UVs
+    decimated = trimesh.load(output_path, process=False)
+    if isinstance(decimated, trimesh.Scene):
+        decimated = decimated.dump(concatenate=True)
+
     log.info(f"  Decimated: {len(decimated.faces)} faces")
-
-    if output_path:
-        decimated.export(output_path)
-        log.info(f"  Decimated mesh saved: {output_path}")
-
     return decimated
 
 
@@ -498,8 +480,7 @@ def decimate_mesh(mesh, target_faces=80000, output_path=None):
 def bake_vertex_colors(mesh, albedo_path):
     """
     Sample the albedo texture at each vertex's UV coordinate to produce
-    vertex colors. This is the most reliable way to get color into .3mf
-    for 3D printing services.
+    vertex colors. Handles both per-vertex and per-face-vertex UV layouts.
     """
     if not os.path.exists(albedo_path):
         log.warning(f"Albedo not found at {albedo_path}, exporting without color.")
@@ -509,22 +490,37 @@ def bake_vertex_colors(mesh, albedo_path):
     tex_array = np.array(texture)
     h, w = tex_array.shape[:2]
 
-    # Try to get UV coordinates
-    if (hasattr(mesh, "visual")
-        and hasattr(mesh.visual, "uv")
-        and mesh.visual.uv is not None
-        and len(mesh.visual.uv) == len(mesh.vertices)):
+    uv = None
 
-        uv = mesh.visual.uv.copy()
-        # Clamp UVs to [0, 1] (handle wrapping)
+    # Try to extract UVs — trimesh stores them differently depending on visual type
+    if hasattr(mesh, "visual") and mesh.visual is not None:
+        visual = mesh.visual
+
+        # Case 1: TextureVisuals (loaded from OBJ with material)
+        if hasattr(visual, "uv") and visual.uv is not None:
+            raw_uv = visual.uv
+            if len(raw_uv) == len(mesh.vertices):
+                uv = raw_uv
+            else:
+                # Per-face-vertex UVs: average to per-vertex
+                log.info(f"  Converting {len(raw_uv)} face-vertex UVs to {len(mesh.vertices)} vertex UVs...")
+                uv = np.zeros((len(mesh.vertices), 2), dtype=np.float64)
+                counts = np.zeros(len(mesh.vertices), dtype=np.int32)
+                for fi, face in enumerate(mesh.faces):
+                    for vi in range(3):
+                        uv_idx = fi * 3 + vi
+                        if uv_idx < len(raw_uv):
+                            uv[face[vi]] += raw_uv[uv_idx]
+                            counts[face[vi]] += 1
+                mask = counts > 0
+                uv[mask] /= counts[mask, np.newaxis]
+
+    if uv is not None and len(uv) > 0:
         uv = uv % 1.0
-        # Convert to pixel coords (flip V for image space)
         px = np.clip((uv[:, 0] * (w - 1)).astype(int), 0, w - 1)
         py = np.clip(((1.0 - uv[:, 1]) * (h - 1)).astype(int), 0, h - 1)
 
-        # Sample texture
-        colors = tex_array[py, px]  # shape: (N, 3)
-        # Add alpha channel (fully opaque)
+        colors = tex_array[py, px]
         alpha = np.full((len(colors), 1), 255, dtype=np.uint8)
         vertex_colors = np.hstack([colors, alpha])
 
@@ -596,7 +592,7 @@ def process_single(image_path, models, output_dir, args):
 
     # ---- Stage 4: Decimation ----------------------------------------------
     decimated_obj = os.path.join(work_dir, "decimated_mesh.obj")
-    decimated_mesh = decimate_mesh(repaired_mesh, target_faces=args.target_faces, output_path=decimated_obj)
+    decimated_mesh = decimate_mesh(repaired_obj, target_faces=args.target_faces, output_path=decimated_obj)
 
     # ---- Stage 5: Export .3mf ---------------------------------------------
     albedo_path = os.path.join(textured_dir, "textured_mesh.jpg")
