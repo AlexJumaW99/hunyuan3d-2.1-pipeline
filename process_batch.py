@@ -23,6 +23,9 @@ import sys
 sys.path.insert(0, './hy3dshape')
 sys.path.insert(0, './hy3dpaint')
 
+# Reduce CUDA memory fragmentation (helps prevent OOM on 16GB cards)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import time
 import traceback
 from pathlib import Path
@@ -55,14 +58,24 @@ def _banner():
     print("\n")
     print("  ╔══════════════════════════════════════════════════════════════════╗")
     print("  ║                                                                  ║")
-    print("  ║   ██╗  ██╗██╗   ██╗███╗   ██╗██╗   ██╗ █████╗ ███╗   ██╗       ║")
-    print("  ║   ██║  ██║██║   ██║████╗  ██║╚██╗ ██╔╝██╔══██╗████╗  ██║       ║")
-    print("  ║   ███████║██║   ██║██╔██╗ ██║ ╚████╔╝ ███████║██╔██╗ ██║       ║")
-    print("  ║   ██╔══██║██║   ██║██║╚██╗██║  ╚██╔╝  ██╔══██║██║╚██╗██║       ║")
-    print("  ║   ██║  ██║╚██████╔╝██║ ╚████║   ██║   ██║  ██║██║ ╚████║       ║")
-    print("  ║   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝       ║")
-    print("  ║                    3 D   P R I N T   E N G I N E                 ║")
-    print("  ║                         v1.0 // 2026                             ║")
+    print("  ║   ███╗   ███╗███████╗██████╗  ██████╗ ███████╗                  ║")
+    print("  ║   ████╗ ████║██╔════╝██╔══██╗██╔═══██╗██╔════╝                  ║")
+    print("  ║   ██╔████╔██║█████╗  ██████╔╝██║   ██║█████╗                    ║")
+    print("  ║   ██║╚██╔╝██║██╔══╝  ██╔══██╗██║   ██║██╔══╝                    ║")
+    print("  ║   ██║ ╚═╝ ██║███████╗██║  ██║╚██████╔╝███████╗                  ║")
+    print("  ║   ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝                  ║")
+    print("  ║                                                                  ║")
+    print("  ║                          /\\                                      ║")
+    print("  ║                         /  \\                                     ║")
+    print("  ║                        /    \\                                    ║")
+    print("  ║                       /  /\\  \\                                   ║")
+    print("  ║                      /  /  \\  \\                                  ║")
+    print("  ║                     /  /    \\  \\                                 ║")
+    print("  ║                    /  /  /\\  \\  \\                                ║")
+    print("  ║                   /__/__/  \\__\\__\\                               ║")
+    print("  ║                                                                  ║")
+    print("  ║                  ═══ 3 D   E N G I N E ═══                       ║")
+    print("  ║                        v1.0 // 2026                              ║")
     print("  ║                                                                  ║")
     print("  ╚══════════════════════════════════════════════════════════════════╝")
     print("")
@@ -652,7 +665,8 @@ def process_single(image_path, models, output_dir, args):
       generation → repair → texture enhance → decimate → export .3mf
     """
     stem = Path(image_path).stem
-    work_dir = os.path.join(output_dir, stem)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    work_dir = os.path.join(output_dir, f"{stem}_{timestamp}")
     os.makedirs(work_dir, exist_ok=True)
 
     # ---- Stage 1: Generation ----------------------------------------------
@@ -687,7 +701,7 @@ def process_single(image_path, models, output_dir, args):
     if not os.path.exists(albedo_path):
         albedo_path = os.path.join(textured_dir, "textured_mesh.png")
 
-    output_3mf = os.path.join(work_dir, f"{stem}.3mf")
+    output_3mf = os.path.join(work_dir, f"{stem}_{timestamp}.3mf")
     export_3mf(decimated_mesh, albedo_path, output_3mf)
 
     # ---- Restore shape model to GPU for next image ------------------------
@@ -747,11 +761,19 @@ def process_batch(args):
             log.debug(traceback.format_exc())
             results["failed"].append((img_path.name, str(e)))
 
-            # Try to restore GPU state for next image
+            # Aggressive VRAM cleanup after failure to prevent cascading OOM
             try:
+                hlog("🔄", "RECOVER", "Flushing VRAM + recovering GPU state...")
+                offload_all_to_cpu(models["i23d_worker"], models["tex_pipeline"])
+                torch.cuda.empty_cache()
+                gc.collect()
+                torch.cuda.empty_cache()  # double flush after gc
                 restore_shape_to_gpu(models["i23d_worker"])
+                hlog("✅", "RECOVER", "GPU state restored ── ready for next target")
             except Exception:
-                pass
+                hlog("⚠️ ", "RECOVER", "GPU recovery failed ── attempting continue")
+                torch.cuda.empty_cache()
+                gc.collect()
 
     # ---- Summary -----------------------------------------------------------
     total = len(image_files)
@@ -815,8 +837,8 @@ def main():
                         help="Shape generation guidance scale (default: 5.5)")
     parser.add_argument("--octree_resolution", type=int, default=380,
                         help="Octree resolution for marching cubes (default: 380)")
-    parser.add_argument("--num_chunks", type=int, default=200000,
-                        help="Number of chunks for shape generation (default: 200000)")
+    parser.add_argument("--num_chunks", type=int, default=500000,
+                        help="Number of chunks for shape generation (default: 500000, higher = less VRAM)")
     parser.add_argument("--gen_face_reduce", type=int, default=90000,
                         help="Face reduction during generation stage (0 to skip, default: 90000)")
 
