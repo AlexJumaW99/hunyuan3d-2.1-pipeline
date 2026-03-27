@@ -292,11 +292,26 @@ def repair_mesh(obj_path, output_path=None):
     )
     ms.add_mesh(pm_mesh)
 
-    ms.meshing_repair_non_manifold_edges()
-    ms.meshing_repair_non_manifold_vertices()
     ms.meshing_remove_duplicate_faces()
     ms.meshing_remove_duplicate_vertices()
-    ms.meshing_close_holes(maxholesize=30)
+
+    # Run non-manifold repair iteratively (some edges need multiple passes)
+    for i in range(5):
+        ms.meshing_repair_non_manifold_edges()
+        ms.meshing_repair_non_manifold_vertices()
+
+    # Attempt hole closing — requires manifold edges, so wrap in try/except
+    try:
+        ms.meshing_close_holes(maxholesize=30)
+        log.info("  Holes closed successfully.")
+    except Exception as e:
+        log.warning(f"  Could not close holes ({e}). Continuing without.")
+        # Try with smaller hole size as fallback
+        try:
+            ms.meshing_close_holes(maxholesize=10)
+            log.info("  Holes closed with smaller maxholesize=10.")
+        except Exception:
+            log.warning("  Hole closing skipped entirely — Manifold3D will handle it.")
 
     # ---- Step 3: Back-side selective Laplacian smoothing -------------------
     log.info("  Back-side smoothing: targeting faces with normal Z < -0.3...")
