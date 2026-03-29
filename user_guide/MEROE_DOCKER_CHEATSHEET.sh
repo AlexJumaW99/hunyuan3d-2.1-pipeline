@@ -36,7 +36,7 @@ for f in ~/Pictures/3d_ai_test_images/*.{png,jpg,jpeg,webp}; do
     [ -f "$f" ] && docker cp "$f" hy3d21_batch:/workspace/Hunyuan3D-2.1/test_images/
 done
 
-for f in ~/Pictures/march28th/*.{png,jpg,jpeg,webp}; do
+for f in ~/Pictures/single_image/*.{png,jpg,jpeg,webp}; do
     [ -f "$f" ] && docker cp "$f" hy3d21_batch:/workspace/Hunyuan3D-2.1/test_images/
 done
 
