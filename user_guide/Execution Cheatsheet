@@ -1,0 +1,11 @@
+docker exec -it hy3d21_batch bash -c "cd /workspace/Hunyuan3D-2.1 && python process_batch.py \
+  --input_dir ./test_images \
+  --output_dir ./save_dir/batch_output \
+  --low_vram_mode \
+  --num_steps 30 \
+  --guidance_scale 7.5 \
+  --octree_resolution 512 \
+  --num_chunks 200000 \
+  
+  
+python process_batch.py --input_dir ./test_images --output_dir ./save_dir/batch_output --low_vram_mode --octree_resolution 512 --num_chunks 200000

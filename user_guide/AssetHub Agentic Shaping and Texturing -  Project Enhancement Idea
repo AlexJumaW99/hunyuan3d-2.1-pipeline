@@ -1,0 +1,22 @@
+AssetHub is doing automated part decomposition of a T-posed character into individual body segments (head, torso, arms, legs, mane, etc.) for downstream 3D mesh generation. Here's how I'd architect an agentic AI pipeline to do something similar:
+The Core Pipeline
+1. Subject Analysis Agent
+The first agent takes the T-pose reference image and identifies what the subject is — a lion-beast warrior, a robot, a human, etc. It produces a structured description and a parts manifest. You'd prompt a vision model (like Claude or GPT-4o) with something like: "Analyze this T-posed character. List every visually distinct body part, accessory, and material." The output is a checklist like what you see in the screenshot: "muscular body," "lion beast head," "long grey mane," "samurai waist armor," etc.
+2. Segmentation Agent
+This is the heavy lifting. You have a few options:
+* SAM 2 (Segment Anything Model) — Use the parts manifest from step 1 as text prompts fed into a grounded segmentation model (e.g., Grounding DINO + SAM 2). Each part name becomes a detection prompt, which produces a bounding box, which SAM then refines into a pixel-precise mask.
+* CLIPSeg or OpenSeg — For more semantic/fuzzy parts (like "mane" vs "head"), these can segment based on natural language descriptions.
+* Fallback: Manual point prompts — If automatic grounding fails on a part, the agent can estimate approximate center points for each body region based on T-pose anatomy priors (e.g., "hands are at the horizontal extremes, head is top-center") and feed those as point prompts to SAM.
+3. Part Extraction & Cleanup Agent
+Once you have masks, each part gets extracted as an isolated RGBA image (transparent background). An agentic loop here handles quality control: the agent inspects each extracted part (via a vision model) and asks "Is this a clean isolation of [part name]? Are there artifacts or missing regions?" If not, it re-prompts the segmentation with adjusted parameters.
+4. Multi-View Generation Agent
+This is what the screenshot hints at with the grid of rotated views. For each isolated part, you'd run a multi-view diffusion model like Zero123++, SV3D, or Wonder3D to generate consistent views from multiple angles (front, back, left, right, 3/4 views). The agent orchestrates this per-part, managing the queue (that's the "Orders" panel with Production IDs you see in the screenshot).
+5. Mesh Reconstruction Agent
+Each set of multi-view images feeds into a 3D reconstruction pipeline — something like InstantMesh, TripoSR, or LRM — to produce actual 3D meshes per body part. The agent validates mesh quality (watertight, correct topology, reasonable poly count).
+The Agentic Orchestration Layer
+What makes this agentic rather than just a fixed pipeline is the decision-making loop:
+* Planning — The orchestrator decides the decomposition strategy based on the subject. A humanoid character gets standard anatomical splits; a creature might need custom segmentation.
+* Error recovery — If segmentation fails on overlapping parts (like hair over shoulders), the agent can try inpainting the occluded region, or adjust the segmentation order (extract the mane first, then inpaint what's beneath it for the body).
+* Task queuing — Parts that don't overlap can be processed in parallel (left arm and right arm), while dependent parts are serialized (body before armor overlay). That's likely what the "Orders" queue with status badges is managing.
+Tech Stack Summary
+The minimal viable version would be: a vision LLM (Claude) as the planning/analysis agent, Grounding DINO + SAM 2 for segmentation, Zero123++ or SV3D for multi-view synthesis, and InstantMesh or TripoSR for 3D reconstruction — all orchestrated by a Python agent framework like LangGraph or a simple state machine.

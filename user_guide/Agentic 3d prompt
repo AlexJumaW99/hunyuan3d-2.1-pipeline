@@ -1,0 +1,50 @@
+Automated 3D Character Decomposition Pipeline
+Architecture & Strategy Documentation
+
+1. System Architecture Overview
+This pipeline relies on a Directed Acyclic Graph (DAG) architecture to manage the conditional logic, parallel processing, and error recovery required for extracting and converting 2D character concepts into modular, production-ready 3D assets.
+
+The 5-Node Agentic Pipeline
+Subject Analysis Node: Ingests the T-pose reference and outputs a hierarchical JSON manifest of body parts and semantic 2D anchor points (joints).
+
+Segmentation Node: Combines RGB data with a monocular depth map to generate precise, Z-depth-aware pixel masks for each item in the manifest.
+
+Extraction & Hallucination Node: Isolates each part into an RGBA image and explicitly inpaints occluded regions (e.g., generating the torso behind a removed arm) to ensure watertight base meshes later.
+
+Multi-View Synthesis Node: Generates consistent 360-degree views (front, back, left, right) for each isolated, inpainted part.
+
+Reconstruction & Auto-Rigging Node: Converts the multi-view arrays into 3D assets, utilizing the semantic anchor points from Step 1 to generate a basic skeletal armature.
+
+2. Recommended Tool Stack (Q1 2026)
+Orchestration & State Management
+Framework: LangGraph. Ideal for managing the complex, stateful, and cyclic nature of visual quality-control loops. It handles parallel queuing (e.g., processing the left and right arms simultaneously) better than linear chaining.
+
+State Memory: A local PostgreSQL vector database (via pgvector). Useful for caching previous segmentation prompts, storing successful workflow patterns, and running RAG on your agent's error logs to improve automatic recovery.
+
+Vision & Semantic Analysis
+Vision LLM: Claude 3.5 Sonnet or GPT-4o. They excel at following strict JSON schema constraints for hierarchical output.
+
+Pose Estimation: MediaPipe or OpenPose for extracting reliable 2D joint coordinates.
+
+Segmentation & Extraction
+Semantic Grounding: Grounding DINO combined with SAM 2 (Segment Anything Model 2).
+
+Depth Estimation: Depth Anything V2 or V3 to provide the Z-axis context needed to prevent edge-bleeding between overlapping parts.
+
+Inpainting: FLUX.1 Kontext Pro or SDXL Inpainting for high-fidelity occlusion hallucination.
+
+3D Generation
+Multi-View Synthesis: GLD (Geometric Latent Diffusion) or CausNVS. These 2026 state-of-the-art models significantly outperform older multi-view models in geometric consistency and inference speed. Zero123++ remains a highly stable fallback.
+
+Mesh Reconstruction: TripoSR or InstantMesh.
+
+Alternative Reconstruction: For highly detailed, non-deformable accessories (like a static staff or complex helmet), bypassing traditional meshing in favor of 3D Gaussian Splatting (via tools like Nerfstudio or gsplat) can yield vastly superior texture fidelity.
+
+3. Strategic Enhancements (The "Secret Sauce")
+Enforce Hierarchical Manifests: Never use flat checklists. The Vision LLM must output relationships (e.g., Torso -> Clothing -> Armor). This DAG structure dictates your extraction order—you must segment the armor before the clothing, and the clothing before the base torso.
+
+Implement Z-Depth Grounding: Feeding SAM 2 purely RGB data on a T-pose will cause the mask of a draping mane to bleed into the chest. Multiplying the RGB image against a normalized Depth Map before segmentation forces the model to respect the physical foreground/background separation.
+
+Mandatory Occlusion Hallucination: Extracting an asset leaves a hole in the parent mesh. Before sending any parent part (like a torso) to the multi-view synthesizer, it must pass through an Inpainting Agent to "heal" the transparent pixels where the child parts (like arms or armor) used to be.
+
+Hardware-Aware Execution: If you are developing and testing locally on Apple Silicon (e.g., a Mac M1), you will hit VRAM and computation bottlenecks running SAM 2, FLUX, and TripoSR simultaneously. Ensure your PyTorch environment is strictly utilizing the MPS (Metal Performance Shaders) backend, or consider offloading the heavy diffusion and reconstruction nodes to a cloud GPU API during local orchestration testing.
